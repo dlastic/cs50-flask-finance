@@ -1,6 +1,7 @@
 import requests
 
 from flask import redirect, render_template, session
+from sqlalchemy import text
 from functools import wraps
 
 
@@ -55,7 +56,7 @@ def lookup(symbol):
         return {
             "name": quote_data["companyName"],
             "price": quote_data["latestPrice"],
-            "symbol": symbol.upper()
+            "symbol": symbol.upper(),
         }
     except requests.RequestException as e:
         print(f"Request error: {e}")
@@ -69,48 +70,57 @@ def usd(value):
     return f"${value:,.2f}"
 
 
-def get_user_portfolio(user_id, db):
+def get_user_portfolio(user_id, engine):
     """Get the user's portfolio."""
-    transactions = db.execute(
-        """
-        SELECT symbol,
-            SUM(shares) AS total_shares
-        FROM transactions
-        WHERE user_id = ?
-        GROUP BY symbol
-        """,
-        user_id
-    )
+    with engine.connect() as conn:
+        result = conn.execute(
+            text(
+                """
+                SELECT symbol,
+                       SUM(shares) AS total_shares
+                FROM transactions
+                WHERE user_id = :user_id
+                GROUP BY symbol
+            """
+            ),
+            {"user_id": user_id},
+        ).mappings()
 
-    portfolio = []
-    total_portfolio_value = 0
+        portfolio = []
+        total_portfolio_value = 0
 
-    for transaction in transactions:
-        symbol = transaction["symbol"]
-        total_shares = transaction["total_shares"]
+        for row in result:
+            symbol = row["symbol"]
+            total_shares = row["total_shares"]
 
-        quote_data = lookup(symbol)
-        if quote_data:
-            price = quote_data["price"]
-            total_value = price * total_shares
-            total_portfolio_value += total_value
+            quote_data = lookup(symbol)
+            if quote_data:
+                price = quote_data["price"]
+                total_value = price * total_shares
+                total_portfolio_value += total_value
 
-            portfolio.append({
-                "symbol": symbol,
-                "shares": total_shares,
-                "price": price,
-                "total_value": total_value
-            })
+                portfolio.append(
+                    {
+                        "symbol": symbol,
+                        "shares": total_shares,
+                        "price": price,
+                        "total_value": total_value,
+                    }
+                )
 
     return portfolio, total_portfolio_value
 
 
-def get_user_cash(user_id, db):
+def get_user_cash(user_id, engine):
     """Get the user's available cash."""
-    cash = db.execute(
-        "SELECT cash FROM users WHERE id = ?", user_id
-    )
-    if cash:
-        return cash[0]["cash"]
-    else:
-        return None
+    with engine.connect() as conn:
+        result = (
+            conn.execute(
+                text("SELECT cash FROM users WHERE id = :user_id"), {"user_id": user_id}
+            )
+            .mappings()
+            .first()
+        )
+        if result is None:
+            raise ValueError("User ID not found in database")
+        return result["cash"]
